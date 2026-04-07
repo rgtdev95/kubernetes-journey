@@ -1,0 +1,75 @@
+1st Goal: Build a kubernetes cluster with kubeadm and add argocd
+
+They will run in my home network
+
+Total of 3 clusters, each cluster has 1 control plane, 1 worker node
+Specs of each VM/nodes - 2 CPU, 4GB of memory, 20GB of disk space
+Hypervisor - Proxmox VE 9
+OS - Debian 12
+
+Cluster Names:
+- central-hub   (hosts ArgoCD - manages prod-cluster and dev-cluster)
+- prod-cluster
+- dev-cluster
+
+ArgoCD Setup:
+- Version v3.3.6
+- Hub-Spoke model: ArgoCD runs on central-hub
+- central-hub's ArgoCD manages deployments to prod-cluster and dev-cluster
+- Remote clusters registered via: argocd cluster add
+- GitOps source: GitHub repository (One Mono-Repo for all clusters)
+
+DNS
+- AdGuard DNS (LXC Container IP: 192.168.1.108), injected to all VMs via Terraform cloud-init.
+- [COMPLETED] DNS entries added for all 6 VM nodes.
+- ArgoCD specifically needs control plane IPs resolvable to reach remote API servers
+
+Ingress
+- All clusters will have their own main entry point for ingress (nginx)
+
+TLS / Certificates
+- cert-manager installed on each cluster
+- Self-signed CA via cert-manager ClusterIssuer
+
+Persistent Storage
+- Longhorn (installed after cluster bootstrap via Helm or ArgoCD)
+- Install order: VM up → OS config → kubeadm bootstrap → deploy Longhorn
+
+Cluster Network
+- CNI for each cluster: Calico
+- Pod CIDR: 10.244.0.0/16
+- MetalLB: Install MetalLB in each cluster with unique IP ranges (see below)
+
+Network:
+- Bridge network in Proxmox: vmbr0
+- Full range: 192.168.1.100 - 192.168.1.199
+
+IP Allocation:
+  VM Static IPs (192.168.1.100 - 192.168.1.109):
+    - central-hub control plane : 192.168.1.107
+    - central-hub worker        : 192.168.1.102
+    - prod-cluster control plane: 192.168.1.103
+    - prod-cluster worker       : 192.168.1.104
+    - dev-cluster control plane : 192.168.1.105
+    - dev-cluster worker        : 192.168.1.106
+
+  MetalLB Pools (192.168.1.110 - 192.168.1.199):
+    - central-hub MetalLB pool  : 192.168.1.110 - 192.168.1.139  (30 IPs)
+    - prod-cluster MetalLB pool : 192.168.1.140 - 192.168.1.169  (30 IPs)
+    - dev-cluster MetalLB pool  : 192.168.1.170 - 192.168.1.199  (30 IPs)
+
+IAC Tools:
+- Terraform (VM provisioning on Proxmox, local state)
+- Ansible, run via WSL on Windows (OS config including open-iscsi and nfs-common for Longhorn, kubeadm bootstrap v1.35), version core 2.16.3
+
+Deployment Order:
+1. Provision VMs with Terraform
+2. Configure OS + bootstrap Kubernetes with Ansible (kubeadm)
+3. Install Calico CNI
+4. Install MetalLB
+5. Install Nginx Ingress Controller
+6. Install cert-manager (self-signed ClusterIssuer)
+7. Install Longhorn (storage)
+8. Install ArgoCD on central-hub
+9. Register prod-cluster and dev-cluster into ArgoCD
+10. Connect ArgoCD to GitHub repo

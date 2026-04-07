@@ -1,0 +1,416 @@
+Kubernetes Cluster Setup
+with kubeadm on Virtual Machines
+containerd · AdGuard DNS · Swap-off · Control Plane & Worker Nodes
+Based on official Kubernetes documentation
+1. Overview & Architecture
+This guide walks you through bootstrapping a Kubernetes cluster from scratch using kubeadm on Linux virtual machines. It covers all critical prerequisites as specified in the official Kubernetes documentation: disabling swap, loading required kernel modules, configuring network parameters, setting up a DNS server (AdGuard Home), installing containerd as the container runtime, and finally bootstrapping the control plane and joining worker nodes.
+ 
+✅ TIP
+All commands must be run as root or with sudo unless noted otherwise. Steps marked [ALL NODES] apply to every VM. Steps marked [CONTROL PLANE ONLY] or [WORKER ONLY] apply to specific node types.
+ 
+1.1 Cluster Topology
+Component
+Recommended Spec
+Control Plane VM
+4 vCPU, 4 GB RAM, 40 GB disk — Ubuntu 22.04 / Debian 12
+Worker Node VM(s)
+2+ vCPU, 2 GB RAM, 20 GB disk — Ubuntu 22.04 / Debian 12
+Container Runtime
+containerd (v1.7+)
+Network Plugin
+Flannel / Calico (choose one)
+DNS Server
+AdGuard Home (self-hosted)
+Kubernetes Version
+v1.30+ (check docs for latest stable)
+ 
+2. DNS Server Setup — AdGuard Home [ALL NODES]
+A reliable DNS resolver is essential for Kubernetes cluster DNS (CoreDNS) to work correctly. AdGuard Home provides DNS-over-HTTPS, filtering, and a clean web UI. Install it on a dedicated VM or on the control plane itself (port 53 must not conflict with systemd-resolved).
+2.1 Install AdGuard Home
+# Download and run the install script
+curl -s -S -L https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
+ 
+# AdGuard Home will start on port 3000 for initial setup
+# Complete the web UI setup at: HYPERLINK "http://<adguard-ip>:3000" http://<adguard-ip>:3000
+# After setup it will run DNS on port 53
+ 
+2.2 Configure All Nodes to Use AdGuard DNS
+# Disable systemd-resolved stub listener to free port 53
+sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf
+sudo systemctl restart systemd-resolved
+ 
+# Point /etc/resolv.conf to your AdGuard Home IP
+sudo rm /etc/resolv.conf
+echo 'nameserver <ADGUARD_HOME_IP>' | sudo tee /etc/resolv.conf
+echo 'nameserver 8.8.8.8'           | sudo tee -a /etc/resolv.conf   # fallback
+ 
+# Verify resolution
+nslookup kubernetes.io
+ 
+⚠️  WARNING
+Replace <ADGUARD_HOME_IP> with the actual IP of your AdGuard Home instance. All nodes must be able to reach it.
+ 
+3. Node Prerequisites [ALL NODES]
+Every node (control plane and workers) must pass these requirements before kubeadm can succeed. Skipping any step will cause kubeadm preflight checks to fail.
+3.1 Disable Swap — REQUIRED
+Kubernetes requires swap to be completely disabled. The kubelet will refuse to start if swap is enabled. This is a hard requirement from the Kubernetes documentation.
+ 
+# Turn off swap immediately
+sudo swapoff -a
+ 
+# Permanently disable swap (survive reboots)
+# Comment out any swap entry in /etc/fstab
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+ 
+# Verify swap is off (output should be empty)
+free -h | grep Swap
+ 
+✅ TIP
+After commenting out fstab, run: sudo systemctl daemon-reload to ensure the change takes effect on next boot.
+ 
+3.2 Set Unique Hostname, MAC Address & Product UUID
+Each node must have a unique hostname, MAC address, and product UUID. Kubernetes uses these to uniquely identify nodes.
+# Set a unique hostname on each node
+sudo hostnamectl set-hostname control-plane-01   # on control plane
+sudo hostnamectl set-hostname worker-node-01     # on first worker
+sudo hostnamectl set-hostname worker-node-02     # on second worker
+ 
+# Verify MAC address uniqueness across all VMs
+ip link show | grep 'link/ether'
+ 
+# Verify product_uuid is unique
+sudo cat /sys/class/dmi/id/product_uuid
+ 
+⚠️  WARNING
+If your VMs are clones, ensure the hypervisor generates a new MAC address for each. Most hypervisors (VirtualBox, VMware, Proxmox) have an option to regenerate MACs.
+ 
+3.3 Configure /etc/hosts (Optional but Recommended)
+# Add entries on EVERY node so hostnames resolve locally
+sudo tee -a /etc/hosts <<EOF
+192.168.1.100  control-plane-01
+192.168.1.101  worker-node-01
+192.168.1.102  worker-node-02
+EOF
+ 
+3.4 Load Required Kernel Modules
+containerd and the Kubernetes network stack require overlay and br_netfilter modules to be loaded permanently.
+# Create the modules-load config file
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+ 
+# Load the modules immediately (no reboot needed)
+sudo modprobe overlay
+sudo modprobe br_netfilter
+ 
+# Verify both modules are loaded
+lsmod | grep overlay
+lsmod | grep br_netfilter
+ 
+3.5 Configure Kernel Network Parameters (sysctl)
+These sysctl settings enable iptables to correctly see bridged traffic, which is required for Kubernetes networking plugins (CNI) to function.
+# Set required sysctl params
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+ 
+# Apply sysctl params without reboot
+sudo sysctl --system
+ 
+# Verify the settings
+sysctl net.bridge.bridge-nf-call-iptables
+sysctl net.ipv4.ip_forward
+ 
+⚠️  WARNING
+These settings persist across reboots because they are written to /etc/sysctl.d/k8s.conf. The br_netfilter module must be loaded BEFORE these values take effect.
+ 
+3.6 Configure Firewall Ports
+Open the necessary ports on each node type. If using UFW on Ubuntu or firewalld on RHEL/CentOS, apply these rules:
+ 
+Node Type / Port
+Protocol / Purpose
+Control Plane — 6443
+TCP — Kubernetes API Server (all nodes + kubectl)
+Control Plane — 2379-2380
+TCP — etcd server client API
+Control Plane — 10250
+TCP — kubelet API
+Control Plane — 10259
+TCP — kube-scheduler
+Control Plane — 10257
+TCP — kube-controller-manager
+Worker Nodes — 10250
+TCP — kubelet API
+Worker Nodes — 10256
+TCP — kube-proxy
+Worker Nodes — 30000-32767
+TCP — NodePort Services
+ 
+# UFW example — Control Plane
+sudo ufw allow 6443/tcp
+sudo ufw allow 2379:2380/tcp
+sudo ufw allow 10250/tcp
+sudo ufw allow 10259/tcp
+sudo ufw allow 10257/tcp
+ 
+# UFW example — Worker Nodes
+sudo ufw allow 10250/tcp
+sudo ufw allow 10256/tcp
+sudo ufw allow 30000:32767/tcp
+ 
+4. Install containerd Container Runtime [ALL NODES]
+Kubernetes requires a container runtime. This guide uses containerd, which is the most common production runtime and is maintained by the CNCF. We follow the official containerd installation method using Docker's apt/dnf repository.
+4.1 Install containerd (Ubuntu/Debian)
+# Install prerequisites
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
+ 
+# Add Docker's official GPG key
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+ 
+# Add Docker repository
+echo \
+  "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu \
+  "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+ 
+# Install containerd
+sudo apt-get update
+sudo apt-get install -y containerd.io
+ 
+4.2 Configure containerd with SystemdCgroup
+Kubernetes requires that the container runtime uses the systemd cgroup driver. This is critical — mismatched cgroup drivers cause kubelet to crash. Generate the default config and then update the cgroup driver setting.
+# Generate default containerd config
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
+ 
+# Set SystemdCgroup = true  (CRITICAL for Kubernetes)
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+ 
+# Verify the change
+grep -i 'systemdcgroup' /etc/containerd/config.toml
+ 
+# Restart and enable containerd
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+ 
+# Verify containerd is running
+sudo systemctl status containerd
+ 
+🔴 CRITICAL
+SystemdCgroup = true is MANDATORY. Without it, the kubelet and containerd will use different cgroup drivers, causing node instability and pod failures.
+ 
+5. Install kubeadm, kubelet, kubectl [ALL NODES]
+Install the three core Kubernetes binaries on every node. The versions must match between the control plane and worker nodes. kubelet runs on every node; kubectl is needed primarily on the control plane but can be installed on workers too.
+5.1 Add Kubernetes apt Repository (Ubuntu/Debian)
+# Install apt transport packages
+sudo apt-get update
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+ 
+# Add Kubernetes signing key (adjust version as needed — check docs for latest)
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+ 
+# Add Kubernetes apt repository
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
+  https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | \
+  sudo tee /etc/apt/sources.list.d/kubernetes.list
+ 
+✅ TIP
+Replace v1.30 with the desired Kubernetes version. Always check https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/ for the current stable release.
+ 
+5.2 Install and Pin the Packages
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+ 
+# Pin versions to prevent accidental upgrades
+sudo apt-mark hold kubelet kubeadm kubectl
+ 
+# Enable and start kubelet
+sudo systemctl enable --now kubelet
+ 
+# Verify installation
+kubeadm version
+kubectl version --client
+kubelet --version
+ 
+📘 NOTE
+kubelet will repeatedly try to start and fail until kubeadm init is run. This is normal — it will stabilize once the cluster is initialized.
+ 
+
+ 
+6. Initialize the Control Plane [CONTROL PLANE ONLY]
+Run kubeadm init on the designated control plane node. This bootstraps the Kubernetes API server, etcd, scheduler, and controller-manager. Choose your Pod network CIDR based on your CNI plugin BEFORE running this command.
+6.1 Pre-flight Check
+# Run preflight checks without actually initializing
+sudo kubeadm init --dry-run
+ 
+# Common preflight checks you should verify:
+# - swap: must be off
+# - hostname uniqueness
+# - required ports available
+# - container runtime is running
+# - br_netfilter / overlay modules loaded
+ 
+6.2 Initialize the Cluster
+# Initialize with Flannel CNI (Pod CIDR = 10.244.0.0/16)
+sudo kubeadm init \
+  --pod-network-cidr=10.244.0.0/16 \
+  --apiserver-advertise-address=<CONTROL_PLANE_IP> \
+  --control-plane-endpoint=<CONTROL_PLANE_IP>
+ 
+# OR: Initialize for Calico CNI (Pod CIDR = 192.168.0.0/16)
+sudo kubeadm init \
+  --pod-network-cidr=192.168.0.0/16 \
+  --apiserver-advertise-address=<CONTROL_PLANE_IP>
+ 
+⚠️  WARNING
+Replace <CONTROL_PLANE_IP> with the actual IP of your control plane VM. Use --control-plane-endpoint if you plan to add more control plane nodes later (HA setup).
+ 
+🔴 CRITICAL
+SAVE THE OUTPUT of kubeadm init! It contains the kubeadm join command with a unique token that worker nodes need. The token expires after 24 hours.
+ 
+6.3 Configure kubectl Access
+# Run these as your REGULAR USER (not root) on the control plane
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+ 
+# Verify cluster is accessible
+kubectl get nodes
+kubectl cluster-info
+ 
+# At this point the control plane node shows as NotReady
+# This is expected — we need to install a CNI plugin next
+ 
+6.4 Install a CNI Network Plugin
+A CNI (Container Network Interface) plugin is required for pod-to-pod networking. Choose ONE of the following options:
+Option A: Flannel (Simpler, recommended for beginners)
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+ 
+Option B: Calico (Feature-rich, recommended for production)
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/tigera-operator.yaml
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/custom-resources.yaml
+ 
+# Watch Calico come up
+watch kubectl get pods -n calico-system
+ 
+# After CNI installation — wait for node to become Ready
+kubectl get nodes -w
+ 
+# Also verify all system pods are running
+kubectl get pods -n kube-system
+ 
+7. Join Worker Nodes [WORKER NODES ONLY]
+After all prerequisites are satisfied on each worker node (steps 2–5 completed), run the join command from the kubeadm init output. If the token has expired, generate a new one.
+7.1 Join Using the Token from kubeadm init
+# Example join command (use YOUR actual output from kubeadm init)
+sudo kubeadm join <CONTROL_PLANE_IP>:6443 \
+  --token <TOKEN> \
+  --discovery-token-ca-cert-hash sha256:<HASH>
+ 
+⚠️  WARNING
+The token expires in 24 hours. If expired, see Section 7.2 to generate a new one.
+ 
+7.2 Generate a New Join Token (if expired)
+# Run on the CONTROL PLANE to generate a new token
+kubeadm token create --print-join-command
+ 
+# The command prints the full kubeadm join ... command
+# Copy and run it on each worker node
+ 
+7.3 Verify Worker Nodes Joined
+# Run on CONTROL PLANE
+kubectl get nodes -o wide
+ 
+# All nodes should show STATUS = Ready after a few minutes
+# Label worker nodes for clarity
+kubectl label node worker-node-01 node-role.kubernetes.io/worker=worker
+kubectl label node worker-node-02 node-role.kubernetes.io/worker=worker
+ 
+8. Verify Cluster Health
+# Check all nodes are Ready
+kubectl get nodes -o wide
+ 
+# Check system pods are all Running
+kubectl get pods -n kube-system
+ 
+# Check component statuses
+kubectl get componentstatuses
+ 
+# Run a test pod to verify networking
+kubectl run nginx --image=nginx --port=80
+kubectl get pods -o wide
+ 
+# Test DNS resolution inside the cluster
+kubectl run dnstest --image=busybox:1.28 --restart=Never -it --rm \
+  -- nslookup kubernetes.default.svc.cluster.local
+ 
+# Clean up test pod
+kubectl delete pod nginx
+ 
+9. Troubleshooting & Common Issues
+9.1 Reset a Node and Start Over
+# On the node to reset (control plane or worker)
+sudo kubeadm reset
+ 
+# Clean up CNI config
+sudo rm -rf /etc/cni/net.d
+ 
+# Flush iptables
+sudo iptables -F && sudo iptables -t nat -F && sudo iptables -t mangle -F && sudo iptables -X
+ 
+# Remove kubectl config
+rm -rf $HOME/.kube
+ 
+9.2 Check kubelet Logs
+sudo journalctl -xeu kubelet --no-pager | tail -50
+ 
+9.3 Common Errors
+ 
+Error
+Cause & Fix
+[ERROR Swap]
+Swap is still enabled. Run: sudo swapoff -a and check /etc/fstab
+[ERROR CRI]
+containerd not running. Run: sudo systemctl restart containerd
+[ERROR SystemdCgroup]
+SystemdCgroup = false in config.toml. Set it to true and restart containerd
+Node stuck at NotReady
+CNI plugin not installed. Run kubectl apply -f <cni-manifest>
+Token expired
+Run kubeadm token create --print-join-command on control plane
+DNS not resolving
+Check AdGuard is reachable. Verify /etc/resolv.conf on the node
+Port 6443 refused
+Firewall blocking access. Open port 6443 from all nodes to control plane
+ 
+10. Quick Reference Checklist
+Use this checklist to track your progress:
+ 
+[ALL NODES] Install and configure AdGuard Home DNS
+[ALL NODES] Disable swap (swapoff -a + /etc/fstab)
+[ALL NODES] Set unique hostname and verify MAC/UUID
+[ALL NODES] Load overlay and br_netfilter kernel modules
+[ALL NODES] Apply sysctl settings (ip_forward + bridge-nf-call)
+[ALL NODES] Configure firewall ports
+[ALL NODES] Install containerd + set SystemdCgroup = true
+[ALL NODES] Install kubeadm, kubelet, kubectl + apt-mark hold
+[CONTROL PLANE] Run kubeadm init with correct --pod-network-cidr
+[CONTROL PLANE] Set up kubeconfig in $HOME/.kube/config
+[CONTROL PLANE] Install CNI plugin (Flannel or Calico)
+[CONTROL PLANE] Verify node is Ready: kubectl get nodes
+[WORKER NODES] Run kubeadm join with token from init output
+[CONTROL PLANE] Verify all nodes show Ready
+[ALL] Run DNS test pod to validate cluster networking
+ 
+✅ TIP
+Always refer to the official Kubernetes documentation at https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/ for the most up-to-date instructions and version-specific details.
+ 
+Kubernetes Documentation: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/

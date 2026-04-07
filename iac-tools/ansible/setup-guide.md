@@ -7,3 +7,6 @@ Ansible Configuration
 - copy the inventory.ini and playbook.yml
 - test connectivity - ansible all -i inventory.ini -m ping
 - run playbook  ansible-playbook -i inventory.ini playbook.yml
+
+validate if clusters are all connected:
+ansible -i inventory.ini control_planes -m command -a "kubectl get nodes"

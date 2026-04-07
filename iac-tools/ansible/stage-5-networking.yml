@@ -1,0 +1,156 @@
+- name: Stage 5 - MetalLB, NGINX Ingress, Cert-Manager
+  hosts: control_planes
+  become: yes
+  vars:
+    metallb_pools:
+      central-hub-cp: "192.168.1.110-192.168.1.139"
+      prod-cluster-cp: "192.168.1.140-192.168.1.169"
+      dev-cluster-cp: "192.168.1.170-192.168.1.199"
+  tasks:
+    # ──────────────────────────────────────────────
+    # Helm Installation
+    # ──────────────────────────────────────────────
+    - name: Check if Helm is installed
+      command: helm version --short
+      register: helm_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Download Helm install script
+      get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get_helm.sh
+        mode: '0755'
+      when: helm_check.rc != 0
+
+    - name: Install Helm
+      command: /tmp/get_helm.sh
+      when: helm_check.rc != 0
+
+    # ──────────────────────────────────────────────
+    # MetalLB
+    # ──────────────────────────────────────────────
+    - name: Deploy MetalLB manifests
+      command: kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.3/config/manifests/metallb-native.yaml --server-side
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for MetalLB controller to be ready
+      command: kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app.kubernetes.io/name=metallb --timeout=120s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+      register: result
+      until: result.rc == 0
+
+    - name: Create MetalLB IPAddressPool and L2Advertisement
+      copy:
+        dest: /tmp/metallb-config.yaml
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: default-pool
+            namespace: metallb-system
+          spec:
+            addresses:
+              - {{ metallb_pools[inventory_hostname] }}
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: default-l2
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+              - default-pool
+
+    - name: Apply MetalLB configuration
+      command: kubectl apply -f /tmp/metallb-config.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # ──────────────────────────────────────────────
+    # NGINX Ingress Controller
+    # ──────────────────────────────────────────────
+    - name: Add ingress-nginx Helm repo
+      command: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ingress_repo
+      changed_when: "'has been added' in ingress_repo.stdout"
+      failed_when: "ingress_repo.rc != 0 and 'already exists' not in ingress_repo.stderr"
+
+    - name: Update Helm repos
+      command: helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install NGINX Ingress Controller
+      command: >
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx
+        --namespace ingress-nginx
+        --create-namespace
+        --set controller.service.type=LoadBalancer
+        --wait
+        --timeout 120s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # ──────────────────────────────────────────────
+    # Cert-Manager
+    # ──────────────────────────────────────────────
+    - name: Add Jetstack Helm repo
+      command: helm repo add jetstack https://charts.jetstack.io
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: jetstack_repo
+      changed_when: "'has been added' in jetstack_repo.stdout"
+      failed_when: "jetstack_repo.rc != 0 and 'already exists' not in jetstack_repo.stderr"
+
+    - name: Update Helm repos
+      command: helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install cert-manager
+      command: >
+        helm upgrade --install cert-manager jetstack/cert-manager
+        --namespace cert-manager
+        --create-namespace
+        --set crds.enabled=true
+        --wait
+        --timeout 120s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Create self-signed ClusterIssuer
+      copy:
+        dest: /tmp/cluster-issuer.yaml
+        content: |
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: selfsigned-issuer
+          spec:
+            selfSigned: {}
+
+    - name: Apply ClusterIssuer
+      command: kubectl apply -f /tmp/cluster-issuer.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # ──────────────────────────────────────────────
+    # Verification
+    # ──────────────────────────────────────────────
+    - name: Show LoadBalancer services
+      command: kubectl get svc --all-namespaces -o wide --field-selector spec.type=LoadBalancer
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: lb_services
+      changed_when: false
+
+    - name: Print LoadBalancer IPs
+      debug:
+        msg: "{{ lb_services.stdout_lines }}"

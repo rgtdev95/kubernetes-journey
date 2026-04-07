@@ -17,7 +17,7 @@
         helm upgrade --install longhorn longhorn/longhorn
         --namespace longhorn-system --create-namespace
         --version 1.8.0
-        --set defaultClass=true
+        --set persistence.defaultClass=true
         --set persistence.defaultClassReplicaCount=2
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf

@@ -42,10 +42,10 @@
   - Join worker node.
 - **Post-Init:** Fetch `admin.conf` (kubeconfig) for all three clusters to local machine for management.
 
-## [PARTIAL] Stage 4: Core Infrastructure Add-ons
+## [COMPLETED] Stage 4: Core Infrastructure Add-ons
 - **Goal:** Base cluster networking and storage on all 3 clusters.
 - **CNI:** [COMPLETED] Calico deployed with `10.244.0.0/16` CIDR on all 3 clusters.
-- **Storage:** Deploy Longhorn via Helm (or wait and let ArgoCD deploy it, but it's often easier to install via Helm first to have default storage class ready).
+- **Storage:** [COMPLETED] Longhorn Block Storage deployed natively across all clusters providing dynamic PVC capabilities.
   
 ## [COMPLETED] Stage 5: MetalLB & Ingress Controllers
 - **Goal:** Provide external accessibility.

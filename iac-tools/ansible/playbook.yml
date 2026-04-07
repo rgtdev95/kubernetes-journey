@@ -91,10 +91,15 @@
         path: /etc/containerd
         state: directory
 
+    - name: Check if full containerd config is generated
+      command: grep -q "SystemdCgroup" /etc/containerd/config.toml
+      register: containerd_generated
+      ignore_errors: true
+      changed_when: false
+
     - name: Configure containerd default config
       shell: containerd config default > /etc/containerd/config.toml
-      args:
-        creates: /etc/containerd/config.toml
+      when: containerd_generated.rc != 0
 
     - name: Enable SystemdCgroup in containerd config
       replace:

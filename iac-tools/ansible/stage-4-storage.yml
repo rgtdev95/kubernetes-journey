@@ -1,0 +1,40 @@
+- name: Stage 4 - Provision Longhorn Block Storage
+  hosts: central-hub-cp, prod-cluster-cp, dev-cluster-cp
+  become: yes
+  tasks:
+    - name: Add Longhorn Helm repository
+      command: helm repo add longhorn https://charts.longhorn.io
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Update Helm repos
+      command: helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install Longhorn v1.8.0 via Helm
+      command: >
+        helm upgrade --install longhorn longhorn/longhorn
+        --namespace longhorn-system --create-namespace
+        --version 1.8.0
+        --set defaultClass=true
+        --set persistence.defaultClassReplicaCount=2
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for Longhorn Manager to initialize
+      command: kubectl -n longhorn-system wait --for=condition=ready pod --selector=app=longhorn-manager --timeout=300s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+      
+    - name: Verify Default StorageClass
+      command: kubectl get sc
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: sc_output
+      changed_when: false
+      
+    - name: Print Storage Output
+      debug:
+        msg: "{{ sc_output.stdout_lines }}"

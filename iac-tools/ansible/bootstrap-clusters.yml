@@ -39,7 +39,7 @@
         dest: /tmp/tigera-operator.yaml
 
     - name: Apply Calico Operator
-      command: kubectl apply -f /tmp/tigera-operator.yaml
+      command: kubectl apply -f /tmp/tigera-operator.yaml --server-side --force-conflicts
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
 

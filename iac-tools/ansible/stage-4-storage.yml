@@ -12,6 +12,14 @@
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
 
+    - name: Check if Longhorn is already safely installed
+      command: helm status longhorn -n longhorn-system
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: helm_status
+      failed_when: false
+      changed_when: false
+
     - name: Install Longhorn v1.8.0 via Helm
       command: >
         helm upgrade --install longhorn longhorn/longhorn
@@ -21,6 +29,7 @@
         --set persistence.defaultClassReplicaCount=2
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
+      when: "'STATUS: deployed' not in helm_status.stdout"
 
     - name: Wait for Longhorn Manager to initialize
       command: kubectl -n longhorn-system wait --for=condition=ready pod --selector=app=longhorn-manager --timeout=300s

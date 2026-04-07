@@ -18,7 +18,7 @@
   - Any future Ingress domains (e.g., `argocd.local -> <metallb-ip>`)
 - **DNS Assignment:** Once AdGuard has an IP, we will update the `main.tf` Terraform code with `dns { servers = ["<adguard-ip>"] }` or configure it via Ansible so all VMs use it.
 
-## Stage 2: OS Configuration & Prerequisites (Ansible)
+## [COMPLETED] Stage 2: OS Configuration & Prerequisites (Ansible)
 - **Goal:** Prepare the Debian 12 nodes for Kubernetes.
 - **Inventory:** Located in `iac-tools/ansible/inventory.ini`. All 6 nodes should be referenced.
 - **Tasks:**
@@ -27,9 +27,9 @@
   - Enable IP forwarding and required kernel modules (`br_netfilter`, `overlay`).
   - Install Container Runtime (`containerd`).
   - Install Longhorn prerequisites (`open-iscsi`, `nfs-common`).
-  - Install `kubeadm`, `kubelet`, and `kubectl` (Pinned Version: **v1.35**).
+  - Install `kubeadm`, `kubelet`, and `kubectl` (Pinned Version: **v1.34**).
 
-## Stage 3: Kubernetes Bootstrap (Ansible / shell)
+## [COMPLETED] Stage 3: Kubernetes Bootstrap (Ansible / shell)
 - **Goal:** Initialize the 3 distinct standard Kubernetes clusters.
 - **central-hub cluster:**
   - Init control plane via `kubeadm init --pod-network-cidr=10.244.0.0/16`.
@@ -42,18 +42,23 @@
   - Join worker node.
 - **Post-Init:** Fetch `admin.conf` (kubeconfig) for all three clusters to local machine for management.
 
-## Stage 4: Core Infrastructure Add-ons
+## [PARTIAL] Stage 4: Core Infrastructure Add-ons
 - **Goal:** Base cluster networking and storage on all 3 clusters.
-- **CNI:** Deploy Calico. Provide `10.244.0.0/16` CIDR.
+- **CNI:** [COMPLETED] Calico deployed with `10.244.0.0/16` CIDR on all 3 clusters.
 - **Storage:** Deploy Longhorn via Helm (or wait and let ArgoCD deploy it, but it's often easier to install via Helm first to have default storage class ready).
   
-## Stage 5: MetalLB & Ingress Controllers
+## [COMPLETED] Stage 5: MetalLB & Ingress Controllers
 - **Goal:** Provide external accessibility.
 - **MetalLB:** Deploy to all 3 clusters and configure IPAddressPools (unique per cluster according to allocation plan) and L2Advertisements.
 - **Ingress:** Deploy NGINX Ingress Controller.
 - **Cert-Manager:** Deploy cert-manager and create a self-signed `ClusterIssuer`.
 
-## Stage 6: GitOps Control Plane (ArgoCD)
+## [COMPLETED] Stage 5.5: NGINX Proxy Manager Route (TP-Link ER605 Bypass)
+- **Goal:** Expose LoadBalancer IPs through the TP-Link ER605 Router across subnets (`192.168.0.x` to `192.168.1.x`).
+- **NPM Integration:** Since the ER605 does not natively support BGP routing, use NGINX Proxy Manager (NPM) on the `192.168.0.x` subnet.
+- **NodePort Mapping:** Map internal DNS domains (e.g. `argocd.local`) inside AdGuard to the NPM IP. Configure NPM to reverse proxy the traffic directly to the physical Control Plane node IP (`192.168.1.107`) targeting the automatically generated NodePort (e.g. `32259`) of the Ingress Controller LoadBalancer.
+
+## [COMPLETED] Stage 6: GitOps Control Plane (ArgoCD)
 - **Goal:** Install and configure ArgoCD on the central hub.
 - **Installation:** Install ArgoCD **v3.3.6** centrally on `central-hub`.
 - **Expose:** Configure Ingress for ArgoCD UI.

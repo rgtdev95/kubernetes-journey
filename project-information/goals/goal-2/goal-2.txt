@@ -4,3 +4,352 @@
 - Steps i did for installing argo workflow
 
 
+Prerequisites
+Before applying anything, confirm these are already running on your cluster:
+
+ArgoCD installed in the argocd namespace
+NGINX Ingress Controller
+cert-manager with a selfsigned-issuer ClusterIssuer
+
+If cert-manager or the issuer aren't set up yet, the ingress TLS will fail silently — worth verifying first.
+
+Step 1 — Create the files
+Create the three files exactly as shown in your structure:
+gitops/
+├── root-app.yaml
+└── apps/
+    └── argo-workflows/
+        ├── application.yaml
+        └── ingress.yaml
+Copy the YAML content you have above into each file.
+
+Step 2 — Commit and push
+powershellgit add .
+git commit -m "feat: add argo-workflows app of apps gitops structure"
+git push origin main
+
+Step 3 — Connect your repo to ArgoCD
+In the ArgoCD UI: Settings → Repositories → Connect Repo
+
+Type: HTTPS
+URL: https://github.com/rgtdev95/kubernetes-journey
+If the repo is private, add your GitHub credentials or a personal access token
+
+Click Connect and confirm it shows a green checkmark.
+
+Step 4 — Apply the root-app (one time only)
+bashkubectl apply -f gitops/root-app.yaml
+That's the only manual kubectl apply you'll ever run. ArgoCD takes it from here — it will discover gitops/apps/argo-workflows/application.yaml automatically and deploy everything.
+
+Step 5 — Access the UI
+Add this to your /etc/hosts (or C:\Windows\System32\drivers\etc\hosts on Windows):
+<your-node-ip>   argo-workflows.local
+Then open https://argo-workflows.local in your browser. Since it's a self-signed cert, you'll need to accept the browser warning.
+
+Troubleshooting tips
+If the sync fails in ArgoCD, the most common causes on kubeadm clusters are:
+
+The argoworkflows namespace not being created (the CreateNamespace=true sync option handles this, but check ArgoCD logs if it errors)
+cert-manager's selfsigned-issuer not existing — create it first if needed
+The ServerSideApply=true option requiring a relatively recent Kubernetes version (1.22+)
+
+You can check sync status with:
+bashkubectl get applications -n argocd
+kubectl describe application argo-workflows -n argocdall of them are running in clusterArgoCD installed in the argocd namespaceNGINX Ingress Controllercert-manager with a selfsigned-issuer ClusterIssueri'm in step 3 this is the error
+Unable to connect to repository: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 10.102.90.240:8081: connect: connection refused"11:52 PMThat IP 10.102.90.240 is a ClusterIP — ArgoCD is trying to reach GitHub through an internal service IP, which means it's hitting a network/proxy issue inside the cluster, not actually reaching GitHub.
+Let's diagnose step by step.
+Step 1 — Check ArgoCD's repo-server and application controller pods
+bashkubectl get pods -n argocd
+Confirm all pods are Running. Then check if the argocd-repo-server specifically is healthy:
+bashkubectl logs -n argocd deployment/argocd-repo-server --tail=50
+
+Step 2 — Test outbound internet from inside the cluster
+Spin up a quick test pod to verify DNS and GitHub are reachable from within the cluster network:
+bashkubectl run curl-test --image=curlimages/curl -it --rm --restart=Never -- \
+  curl -v https://github.com 2>&1 | head -20
+If this fails, your kubeadm nodes don't have outbound internet access — that's the root problem and needs to be fixed at the network level (firewall rules, NAT, etc).
+If this succeeds, the issue is specific to ArgoCD's network context.
+
+Step 3 — Check ArgoCD's DNS resolution
+bashkubectl exec -n argocd deployment/argocd-repo-server -- \
+  nslookup github.com
+If DNS fails here but works on the node, your CoreDNS or pod network (CNI) may have an issue.
+
+Step 4 — Check that IP 10.102.90.240
+That internal IP is suspicious — find out what it is:
+bashkubectl get svc -A | grep 10.102.90.240
+This will tell you which service ArgoCD is incorrectly routing through. It shouldn't be routing GitHub traffic through a ClusterIP at all.
+
+Step 5 — Check ArgoCD config for any proxy or custom repo settings
+bashkubectl get configmap argocd-cmd-params-cm -n argocd -o yaml
+kubectl get configmap argocd-rbac-cm -n argocd -o yaml
+Look for any http.proxy, repo.server, or custom endpoint overrides that might be redirecting traffic.
+
+Start with Step 2 and Step 4 — those two will immediately tell you whether it's a cluster networking issue or a misconfigured ArgoCD service endpoint. Paste the output and we'll go from there.k8sadmin@central-hub-cp:~$ kubectl get pods -n argocd
+NAME                                               READY   STATUS    RESTARTS      AGE
+argocd-application-controller-0                    1/1     Running   2 (48m ago)   3h41m
+argocd-applicationset-controller-cf6df4d44-g4x6h   1/1     Running   2 (48m ago)   3h45m
+argocd-dex-server-694c74cbb8-zxprv                 1/1     Running   1 (58m ago)   3h45m
+argocd-notifications-controller-67dd6d74b5-m4qn6   1/1     Running   2 (48m ago)   3h45m
+argocd-redis-85b9d55dc4-wbgv7                      1/1     Running   1 (58m ago)   3h45m
+argocd-repo-server-6fd5c47689-t9gb9                0/1     Unknown   0             3h45m
+argocd-server-79fdfd7f5b-zdmd9                     1/1     Running   2 (48m ago)   3h45m
+k8sadmin@central-hub-cp:~$11:52 PMFound it. argocd-repo-server is in Unknown status — that's exactly why repo connections fail. The repo-server is the component that actually clones and reads your Git repos.
+Fix it — restart the repo-server pod
+bashkubectl rollout restart deployment/argocd-repo-server -n argocd
+Then watch it come back up:
+bashkubectl get pods -n argocd -w
+Wait until argocd-repo-server-xxxxx shows 1/1 Running. Should take 30–60 seconds.
+
+Then check why it went Unknown
+Unknown usually means the node it was scheduled on lost contact with the API server (kubelet issue), or the pod was evicted. Check:
+bashkubectl describe pod -n argocd -l app.kubernetes.io/name=argocd-repo-server | tail -30
+Look at the Events section at the bottom — it will say exactly what happened (node not ready, OOM killed, evicted, etc).
+
+Once the repo-server is 1/1 Running, go back to ArgoCD UI → Settings → Repositories and try connecting your repo again. The error should be gone.it's working now11:53 PMGreat! Now continue with Step 4 — apply the root-app:
+bashkubectl apply -f gitops/root-app.yaml
+Then watch ArgoCD do its thing:
+bashkubectl get applications -n argocd -w
+You should see two applications appear — root-app and then argo-workflows get created automatically. Both should eventually show Synced and Healthy.
+If argo-workflows gets stuck, check its sync status with:
+bashkubectl describe application argo-workflows -n argocd
+Let me know what you see!before i proceed with step 4 do i hvae to be in control plane or worker node?11:54 PMYou just need to be on any machine where kubectl is configured to talk to your cluster — in your case that's the control plane (central-hub-cp), which is where you've been running all your commands.
+bash# You're already here, just run:
+kubectl apply -f gitops/root-app.yaml
+You don't need to be on a worker node at all. kubectl commands are always run from wherever your ~/.kube/config is set up, which on a kubeadm cluster is typically the control plane node.^Ck8sadmin@central-hub-cp:~kubectl apply -f gitops/root-app.yamlml
+error: the path "gitops/root-app.yaml" does not exist
+k8sadmin@central-hub-cp:~$11:54 PMThe file doesn't exist locally on the control plane — you created it in your GitHub repo but never cloned it onto the server.
+You have two options:
+Option A — Clone your repo (recommended)
+bashgit clone https://github.com/rgtdev95/kubernetes-journey.git
+cd kubernetes-journey
+kubectl apply -f gitops/root-app.yaml
+Option B — Apply it directly without cloning
+bashkubectl apply -f https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml
+Option B is the quickest since you only need to run this once. Go with whichever feels easier!is this the proper way to do this?11:55 PMYes, both are valid — but let me give you the full picture.
+Option A (clone the repo) is the proper way for a real GitOps workflow because:
+
+You have a local copy to make changes, commit, and push
+You're working from the same repo that ArgoCD watches
+Any future changes you make on the control plane get pushed to Git, and ArgoCD picks them up automatically
+
+The typical flow looks like this:
+Your control plane (git clone)
+        ↓
+   edit files locally
+        ↓
+   git push to GitHub
+        ↓
+   ArgoCD detects change → syncs to cluster
+Option B is fine as a one-off — and since root-app.yaml is the only file you ever manually apply, some people do use it just to bootstrap. After that single apply, everything else is Git-driven and you never need to be on the control plane again.
+
+For your setup, I'd go with Option A:
+bashgit clone https://github.com/rgtdev95/kubernetes-journey.git
+cd kubernetes-journey
+kubectl apply -f gitops/root-app.yaml
+This way your control plane is your working environment for the entire Kubernetes journey going forward.done what is the next step11:57 PMRun this to watch ArgoCD pick everything up:
+bashkubectl get applications -n argocd -w
+You should see two applications appear and sync:
+
+root-app — syncs first, discovers gitops/apps/
+argo-workflows — gets created automatically by root-app
+
+Both should eventually show Synced and Healthy. Paste the output here and we'll move to the next step based on what you see.this is the only thing i seek8sadmin@central-hub-cp:~$ kubectl get applications -n argocd -w
+NAME       SYNC STATUS   HEALTH STATUS
+root-app   Synced        Healthy11:58 PMroot-app is synced and healthy, but argo-workflows hasn't appeared yet. Let's check why.
+bashkubectl get applications -n argocd
+kubectl get pods -n argoworkflows
+Also check what root-app actually found in your repo:
+bashkubectl describe application root-app -n argocd | grep -A 20 "Status:"
+Paste the output — most likely cause is either the gitops/apps/ path in your repo doesn't match exactly, or the child application.yaml has a small issue. Let's see what ArgoCD says.k8sadmin@central-hub-cp:~$ kubectl get applications -n argocd -w
+NAME       SYNC STATUS   HEALTH STATUS
+root-app   Synced        Healthy
+^Ck8sadmin@central-hub-cp:~kubectl get pods -n argoworkflowsws
+No resources found in argoworkflows namespace.
+k8sadmin@central-hub-cp:~$ kubectl get applications -n argocd
+NAME       SYNC STATUS   HEALTH STATUS
+root-app   Synced        Healthy
+k8sadmin@central-hub-cp:~$ kubectl describe application root-app -n argocd | grep -A 20 "Status:"
+Status:
+  Controller Namespace:  argocd
+  Health:
+    Last Transition Time:  2026-04-08T15:57:03Z
+    Status:                Healthy
+  Reconciled At:           2026-04-08T15:56:59Z
+  Resource Health Source:  appTree
+  Source Type:             Directory
+  Sync:
+    Compared To:
+      Destination:
+        Namespace:  argocd
+        Server:     https://kubernetes.default.svc
+      Source:
+        Path:             gitops/apps
+        Repo URL:         https://github.com/rgtdev95/kubernetes-journey
+        Target Revision:  main
+    Revision:             96aaffcfe80f35e4f353ec6c4a83f397eba7a6fd
+    Status:               Synced
+Events:
+  Type    Reason           Age   From                           Message
+  ----    ------           ----  ----                           -------
+  Normal  ResourceUpdated  86s   argocd-application-controller  Updated sync status:  -> Synced
+  Normal  ResourceUpdated  86s   argocd-application-controller  Updated health status:  -> Healthy
+k8sadmin@central-hub-cp:~$Show more11:58 PMRoot-app is synced but it's not creating the argo-workflows child application. The issue is that root-app is scanning gitops/apps but your application.yaml is nested inside gitops/apps/argo-workflows/ — ArgoCD's directory source by default may not be recursing into subdirectories.
+Fix — enable recursive directory scanning in root-app.yaml
+Edit your gitops/root-app.yaml to add recurse: true:
+yamlapiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rgtdev95/kubernetes-journey
+    targetRevision: main
+    path: gitops/apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+Then commit, push, and re-apply:
+bashcd kubernetes-journey
+# edit the file, then:
+git add gitops/root-app.yaml
+git commit -m "fix: enable recursive directory scan for app-of-apps"
+git push origin main
+
+kubectl apply -f gitops/root-app.yaml
+Then watch again:
+bashkubectl get applications -n argocd -w
+You should now see argo-workflows appear alongside root-app.k8sadmin@central-hub-cp:~$ kubectl apply -f https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml
+application.argoproj.io/root-app unchanged
+k8sadmin@central-hub-cp:~$ kubectl get applications -n argocd
+NAME       SYNC STATUS   HEALTH STATUS
+root-app   Synced        Healthy
+k8sadmin@central-hub-cp:~$ kubectl describe application root-app -n argocd | grep -A 20 "Status:"
+Status:
+  Controller Namespace:  argocd
+  Health:
+    Last Transition Time:  2026-04-08T15:57:03Z
+    Status:                Healthy
+  Reconciled At:           2026-04-08T15:56:59Z
+  Resource Health Source:  appTree
+  Source Type:             Directory
+  Sync:
+    Compared To:
+      Destination:
+        Namespace:  argocd
+        Server:     https://kubernetes.default.svc
+      Source:
+        Path:             gitops/apps
+        Repo URL:         https://github.com/rgtdev95/kubernetes-journey
+        Target Revision:  main
+    Revision:             96aaffcfe80f35e4f353ec6c4a83f397eba7a6fd
+    Status:               Synced
+Events:
+  Type    Reason           Age    From                           Message
+  ----    ------           ----   ----                           -------
+  Normal  ResourceUpdated  2m58s  argocd-application-controller  Updated sync status:  -> Synced
+  Normal  ResourceUpdated  2m58s  argocd-application-controller  Updated health status:  -> Healthy
+k8sadmin@central-hub-cp:~$ kubectl get applications -n argocd -w
+NAME       SYNC STATUS   HEALTH STATUS
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        HealthyShow less12:16 AMThe revision hasn't changed (96aaffcfe80f35e4f353ec6c4a83f397eba7a6fd) — meaning ArgoCD is still reading the old version of root-app.yaml without recurse: true. The push didn't make it, or the file wasn't saved correctly.
+Let's verify what's actually in your repo right now:
+bashcurl -s https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml
+If it doesn't show recurse: true, the push didn't go through. Check from inside your cloned repo:
+bashcd kubernetes-journey
+cat gitops/root-app.yaml
+git log --oneline -3
+git status
+Paste the output and we'll see exactly what happened.curl -s https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml^Ck8sadmin@central-hub-cp:~$ curl -s https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml                 curl -s https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rgtdev95/kubernetes-journey
+    targetRevision: main
+    path: gitops/apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: truek8sadmin@central-hub-cp:~$Show more12:16 AMThe file is correct in GitHub with recurse: true. The problem is ArgoCD hasn't re-synced yet to pick up the new commit. Force a refresh:
+bashkubectl annotate application root-app -n argocd argocd.argoproj.io/refresh=hard --overwrite
+Then watch immediately:
+bashkubectl get applications -n argocd -w
+You should see argo-workflows appear within a few seconds.selfHeal: truek8sadmikubectl annotate application root-app -n argocd argocd.argoproj.io/refresh=hard --overwriteesh=hard --overwrite
+application.argoproj.io/root-app annotated
+k8sadmin@central-hub-cp:~$ kubectl get applications -n argocd -w
+NAME       SYNC STATUS   HEALTH STATUS
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        Healthy
+root-app   Synced        Healthy12:17 AMStill not picking up the child app. Let's check what resources root-app actually discovered:
+bashkubectl describe application root-app -n argocd | grep -A 40 "Resources:"
+Also check if there's any error in the repo-server logs right now:
+bashkubectl logs -n argocd deployment/argocd-repo-server --tail=30
+And verify your actual folder structure in the repo matches exactly:
+bashcurl -s "https://api.github.com/repos/rgtdev95/kubernetes-journey/git/trees/main?recursive=1" | grep path
+This will show us the exact file paths GitHub sees — sometimes a folder naming mismatch (apps vs app) is the culprit.^Ck8sadmin@central-hub-cp:~kubectl describe application root-app -n argocd | grep -A 40 "Resources:":"
+k8sadmin@central-hub-cp:~$ kubectl logs -n argocd deployment/argocd-repo-server --tail=30
+Defaulted container "argocd-repo-server" out of: argocd-repo-server, copyutil (init)
+{"grpc.code":"OK","pasted12:17 AMThe repo structure is perfect and the files are all there. The problem is in the logs — ArgoCD is still using a cached old revision (92d7dc1a58f068ced1775fd0cf82699e72556053) which is the one WITHOUT recurse: true. It's serving from cache and not fetching the latest commit.
+Force it to clear the cache completely:
+bash# Delete and re-apply the root-app to force a clean state
+kubectl delete application root-app -n argocd
+kubectl apply -f https://raw.githubusercontent.com/rgtdev95/kubernetes-journey/main/gitops/root-app.yaml
+Then watch immediately:
+bashkubectl get applications -n argocd -w
+Deleting and re-applying forces ArgoCD to treat it as a brand new application with no cached revision, so it will fetch fresh from GitHub and this time pick up recurse: true and discover the argo-workflows child app.all done, how can i access it?12:20 AMFirst, get your node IP:
+bashkubectl get nodes -o wide
+Then add the hostname to your local machine's hosts file (the machine where your browser is, not the server).
+On Windows (run Notepad as Administrator, open C:\Windows\System32\drivers\etc\hosts):
+<node-ip>   argo-workflows.local
+On Mac/Linux (sudo nano /etc/hosts):
+<node-ip>   argo-workflows.local
+Then open your browser and go to:
+https://argo-workflows.local
+Accept the self-signed certificate warning and you should see the Argo Workflows UI.
+
+If it doesn't load
+Check that the ingress and pods are running:
+bashkubectl get pods -n argoworkflows
+kubectl get ingress -n argoworkflows
+Paste the output if anything looks off and we'll troubleshoot from there.kubectl get nodes -o wide^Ck8sadmin@central-hub-cp:~$ kubectl get nodes -o wide
+NAME                 STATUS   ROLES           AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION   CONTAINER-RUNTIME
+central-hub-cp       Ready    control-plane   30h   v1.34.6   192.168.1.107   <none>        Debian GNU/Linux 12 (bookworm)   6.1.0-44-amd64   containerd://2.2.2
+central-hub-worker   Ready    <none>          30h   v1.34.6   192.168.1.102   <none>        Debian GNU/Linux 12 (bookworm)   6.1.0-44-amd64   containerd://2.2.2
+k8sadmin@central-hub-cp:~$ kubectl get pods -n argoworkflows
+NAME                                                  READY   STATUS    RESTARTS   AGE
+argo-workflows-server-668dc8bbf7-f4wnp                1/1     Running   0          2m55s
+argo-workflows-workflow-controller-58d755f7bf-lsf76   1/1     Running   0          2m55s
+k8sadmin@central-hub-cp:~$ kubectl get ingress -n argoworkflows
+NAME                     CLASS   HOSTS                  ADDRESS         PORTS     AGE
+argo-workflows-ingress   nginx   argo-workflows.local   192.168.1.110   80, 443   3m39s
+k8sadmin@central-hub-cp:~$so the ingress is with metallb but my router does not support BGP so my argocd is accesible via https://argocd.local:32259/running in 192.168.1.107Show more12:22 AMGot it — your setup uses NodePort, not LoadBalancer/MetalLB for external access. Use the ingress controller's NodePort directly.
+Find the NGINX ingress NodePort for HTTPS:
+bashkubectl get svc -n ingress-nginx
+Look for the 443 port mapping, it'll look something like 443:3XXXX/TCP. Then add this to your local machine's hosts file:
+192.168.1.107   argo-workflows.local
+Then access it the same way you access ArgoCD:
+https://argo-workflows.local:3XXXX

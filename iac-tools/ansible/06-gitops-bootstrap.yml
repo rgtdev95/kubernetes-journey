@@ -1,0 +1,9 @@
+- name: Bootstrap Argo CD GitOps for Argo Workflows
+  hosts: central-hub-cp
+  become: yes
+  tasks:
+    - name: Apply Root Application manifest
+      command: >
+        kubectl apply -f {{ playbook_dir }}/../../gitops/root-manifests/root-app.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf

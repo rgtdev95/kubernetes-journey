@@ -1,0 +1,15 @@
+controller:
+  replicaCount: 1
+server:
+  ingress:
+    enabled: true
+    hosts:
+      - host: argo-workflows.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - argo-workflows.local
+        secretName: argo-workflows-tls
+  authMode: server   # simple auth for homelab

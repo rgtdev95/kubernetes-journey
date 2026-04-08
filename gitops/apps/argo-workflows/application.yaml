@@ -11,8 +11,16 @@ spec:
     targetRevision: 1.0.7
     helm:
       releaseName: argo-workflows
-      valueFiles:
-        - values.yaml
+      values: |
+        workflow:
+          serviceAccount:
+            create: true
+        controller:
+          workflowNamespaces:
+            - argo
+        server:
+          authModes:
+            - server
   destination:
     server: https://kubernetes.default.svc
     namespace: argo

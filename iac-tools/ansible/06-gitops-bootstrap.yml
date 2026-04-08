@@ -2,7 +2,9 @@
   hosts: central-hub-cp
   become: yes
   tasks:
-    - name: Apply Root Application manifest
+    - name: Apply Root Application manifest locally
+      delegate_to: localhost
+      run_once: true
       command: >
         kubectl apply -f {{ playbook_dir }}/../../gitops/root-manifests/root-app.yaml
       environment:

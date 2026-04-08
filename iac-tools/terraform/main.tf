@@ -11,7 +11,7 @@ locals {
     }
     "central-hub-worker" = {
       cores    = 2
-      memory   = 4096
+      memory   = 6144
       disk_gb  = 20
       ip       = "192.168.1.102/24"
       username = "k8sadmin"

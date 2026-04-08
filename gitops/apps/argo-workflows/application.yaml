@@ -17,13 +17,13 @@ spec:
             create: true
         controller:
           workflowNamespaces:
-            - argo
+            - argoworkflows
         server:
           authModes:
             - server
   destination:
     server: https://kubernetes.default.svc
-    namespace: argo
+    namespace: argoworkflows
   syncPolicy:
     automated:
       prune: true

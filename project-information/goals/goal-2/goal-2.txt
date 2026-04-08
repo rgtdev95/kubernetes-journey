@@ -1,1 +1,2 @@
 - Install argocd workflow in central-hub cluster
+- Follow the "Argo-managing-Argo" pattern which ensures your workflow engine is version-controlled and self-healing.

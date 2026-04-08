@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argo-workflows-ingress
+  namespace: argoworkflows
+  annotations:
+    cert-manager.io/cluster-issuer: selfsigned-issuer
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - argo-workflows.local
+      secretName: argo-workflows-tls-certificate
+  rules:
+    - host: argo-workflows.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argo-workflows-server
+                port:
+                  number: 2746

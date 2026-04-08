@@ -1,2 +1,39 @@
 - Install argocd workflow in central-hub cluster
-- Follow the "Argo-managing-Argo" pattern which ensures your workflow engine is version-controlled and self-healing.
+
+
+- Steps i did for installing argo workflow
+In ArgoCD → New App, fill in:
+General
+
+App name: argo-workflows
+Project: default
+Sync policy: Automatic
+✅ Prune and Self Heal
+
+Source
+
+Repository URL: https://argoproj.github.io/argo-helm
+Chart: argo-workflows
+Version: 1.0.7
+
+Destination
+
+Cluster: https://kubernetes.default.svc
+Namespace: argo
+
+Helm Values (paste this in the values box)
+yamlworkflow:
+  serviceAccount:
+    create: true
+controller:
+  workflowNamespaces:
+    - argo
+server:
+  authModes:
+    - server
+
+Sync Options (under the sync policy section)
+
+✅ Create Namespace
+✅ Server-Side Apply
+

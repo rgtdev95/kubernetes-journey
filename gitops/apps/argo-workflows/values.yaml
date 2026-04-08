@@ -1,0 +1,12 @@
+workflow:
+  serviceAccount:
+    create: true
+    name: argo-workflow
+
+controller:
+  workflowNamespaces:
+    - argo
+
+server:
+  authModes:
+    - server   # change to 'client' for production with proper auth

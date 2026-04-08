@@ -1,0 +1,1 @@
+- In proxmox, do not stop the VM's, instead use proper shutdown command to avoid issue when starting them again.

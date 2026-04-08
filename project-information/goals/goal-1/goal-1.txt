@@ -72,4 +72,5 @@ Deployment Order:
 7. Install Longhorn (storage)
 8. Install ArgoCD on central-hub
 9. Register prod-cluster and dev-cluster into ArgoCD
-10. Connect ArgoCD to GitHub repo
+
+-- COMPLETED -- 

@@ -64,8 +64,3 @@
 - **Expose:** Configure Ingress for ArgoCD UI.
 - **Repositories:** Connect ArgoCD to the single GitHub Mono-Repo.
 - **Cluster Registration:** Add `prod-cluster` and `dev-cluster` to `central-hub` ArgoCD using `argocd cluster add`.
-
-## Stage 7: Workload Deployment (GitOps)
-- **Goal:** Test and establish the GitOps pipeline.
-- Structure the GitHub Mono-Repo with folders for `base`, `overlays/prod`, `overlays/dev`, `clusters/central`.
-- Create ArgoCD `Application` or `ApplicationSet` manifests to manage applications across clusters.

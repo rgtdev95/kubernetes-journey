@@ -1,0 +1,1 @@
+- Install argocd workflow in central-hub cluster

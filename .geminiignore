@@ -1,0 +1,44 @@
+# ============================================================
+# .geminiignore — Controls what Gemini AI can see in this repo
+# Rule: Exclude secrets, generated artifacts, and binary noise.
+#       Keep all meaningful source, config, and docs VISIBLE.
+# ============================================================
+
+# --- Secrets & Credentials (NEVER expose these) ---
+.env
+*.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+kubeconfig
+**/kubeconfig
+**/*.kubeconfig
+private-notes.md
+
+# --- Database Dumps ---
+*.sql
+local-db-dump.sql
+
+# --- Terraform Generated State (large, noisy, secrets inside) ---
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/*.tfplan
+**/.terraform.lock.hcl
+
+# --- Git Internals ---
+.git/
+
+# --- OS & Editor Noise ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# --- Logs ---
+*.log
+logs/

@@ -53,10 +53,10 @@
 - **Ingress:** Deploy NGINX Ingress Controller.
 - **Cert-Manager:** Deploy cert-manager and create a self-signed `ClusterIssuer`.
 
-## [COMPLETED] Stage 5.5: NGINX Proxy Manager Route (TP-Link ER605 Bypass)
-- **Goal:** Expose LoadBalancer IPs through the TP-Link ER605 Router across subnets (`192.168.0.x` to `192.168.1.x`).
-- **NPM Integration:** Since the ER605 does not natively support BGP routing, use NGINX Proxy Manager (NPM) on the `192.168.0.x` subnet.
-- **NodePort Mapping:** Map internal DNS domains (e.g. `argocd.local`) inside AdGuard to the NPM IP. Configure NPM to reverse proxy the traffic directly to the physical Control Plane node IP (`192.168.1.107`) targeting the automatically generated NodePort (e.g. `32259`) of the Ingress Controller LoadBalancer.
+## [COMPLETED] Stage 5.5: AdGuard DNS → MetalLB VIP
+- **Goal:** Route `*.local` service domains to the correct NGINX Ingress without an intermediate reverse proxy.
+- **Solution:** AdGuard DNS rewrites resolve service domains (e.g. `argocd.local`, `argo-workflows.local`) directly to the MetalLB External IP (`192.168.1.110`) of the central-hub NGINX Ingress controller.
+- **Flow:** Browser → AdGuard DNS → MetalLB VIP → NGINX Ingress → App pod.
 
 ## [COMPLETED] Stage 6: GitOps Control Plane (ArgoCD)
 - **Goal:** Install and configure ArgoCD on the central hub.

@@ -10,8 +10,7 @@ This document is the single source of truth for all networking across the home l
 |---|---|---|---|
 | TP-Link ER605 Router | 192.168.1.x | 192.168.1.1 | Default Gateway |
 | Windows PC (Developer) | 192.168.1.x | DHCP / Static | Workstation / WSL |
-| AdGuard DNS (LXC) | 192.168.1.x | 192.168.1.109 | DNS Resolver |
-| NGINX Proxy Manager | 192.168.1.x | TBD | Tier-1 Reverse Proxy |
+| AdGuard DNS (LXC) | 192.168.1.x | 192.168.1.108 | DNS Resolver for `.local` domains |
 | Proxmox VE 9 Host | 192.168.1.x | 192.168.1.100 (Bridge: vmbr0) | Hypervisor |
 
 ---
@@ -57,7 +56,7 @@ This document is the single source of truth for all networking across the home l
 | prod-cluster | default-pool | 192.168.1.140 - 192.168.1.169 | 30 |
 | dev-cluster | default-pool | 192.168.1.170 - 192.168.1.199 | 30 |
 
-> Note: While MetalLB L2 virtual IPs are now on the same `192.168.1.x` subnet as the router and nodes, we still utilize NPM + NodePorts for centralized Domain/TLS proxying.
+> Note: AdGuard DNS resolves `*.local` service domains directly to the MetalLB External IP of each cluster's NGINX Ingress controller. No reverse proxy layer is used.
 
 ---
 
@@ -91,31 +90,36 @@ This document is the single source of truth for all networking across the home l
 | Ingress Host | argocd.local |
 | Backend Protocol | HTTPS (port 443) |
 | Admin Username | admin |
-| Admin Password | lw6QFkNi9IbEdXAK |
 
 ---
 
-## NPM Reverse Proxy Mappings
+## Access Pattern
 
-| Domain | NPM Target (Physical IP:NodePort) | Cluster |
+All service domains resolve via AdGuard DNS (`192.168.1.108`) directly to the MetalLB External IP of the target cluster's NGINX Ingress controller. Traffic flows:
+
+```
+Browser → AdGuard DNS → MetalLB VIP → NGINX Ingress → App Pod
+```
+
+| Domain | DNS Answer (MetalLB VIP) | Cluster |
 |---|---|---|
-| argocd.local | https://192.168.1.107:32259 | central-hub |
-| prod.local | https://192.168.1.103:30739 | prod-cluster |
-| dev.local | https://192.168.1.105:30629 | dev-cluster |
+| argocd.local | 192.168.1.110 | central-hub |
+| argo-workflows.local | 192.168.1.110 | central-hub |
 
 ---
 
-## DNS Rewrites (AdGuard)
+## DNS Rewrites (AdGuard — `192.168.1.108`)
 
 | Domain | Answer IP | Purpose |
 |---|---|---|
-| central-hub-cp.local | 192.168.1.107 | VM Node |
-| central-hub-worker.local | 192.168.1.102 | VM Node |
-| prod-cluster-cp.local | 192.168.1.103 | VM Node |
-| prod-cluster-worker.local | 192.168.1.104 | VM Node |
-| dev-cluster-cp.local | 192.168.1.105 | VM Node |
-| dev-cluster-worker.local | 192.168.1.106 | VM Node |
-| argocd.local | NPM IP (TBD) | ArgoCD UI |
+| central-hub-cp.local | 192.168.1.107 | VM Node direct access |
+| central-hub-worker.local | 192.168.1.102 | VM Node direct access |
+| prod-cluster-cp.local | 192.168.1.103 | VM Node direct access |
+| prod-cluster-worker.local | 192.168.1.104 | VM Node direct access |
+| dev-cluster-cp.local | 192.168.1.105 | VM Node direct access |
+| dev-cluster-worker.local | 192.168.1.106 | VM Node direct access |
+| argocd.local | 192.168.1.110 | central-hub NGINX Ingress (MetalLB VIP) |
+| argo-workflows.local | 192.168.1.110 | central-hub NGINX Ingress (MetalLB VIP) |
 
 ---
 
@@ -178,14 +182,12 @@ flowchart TD
     Proxmox -.-> |"Hosts"| Cluster3
 
     %% Note for Reverse Proxy & AdGuard
-    NPM("NGINX Proxy Manager<br>(192.168.1.x Subnet)")
-    AdGuard("AdGuard DNS<br>(192.168.1.109)")
+    AdGuard("AdGuard DNS\n(192.168.1.108)")
     
-    Router -.-> AdGuard
-    Router -.-> NPM
-    NPM -.-> |"Proxies traffic to"| Ingress1
-    NPM -.-> |"Proxies traffic to"| Ingress2
-    NPM -.-> |"Proxies traffic to"| Ingress3
+    Router -..-> AdGuard
+    AdGuard -..-> |"Resolves *.local to MetalLB VIP"| MLB1
+    AdGuard -..-> |"Resolves *.local to MetalLB VIP"| MLB2
+    AdGuard -..-> |"Resolves *.local to MetalLB VIP"| MLB3
 
     %% Styling
     style GlobalNet fill:#f4f6f6,stroke:#7f8c8d,stroke-dasharray: 5 5

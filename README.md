@@ -8,9 +8,8 @@ This project implements a **three-tier Kubernetes infrastructure** running on 6 
 
 ### 🌐 Network Topology
 - **Physical Network Gateway**: `192.168.1.1` (TP-Link ER605)
-- **Local DNS**: `192.168.1.109` (AdGuard Home LXC)
+- **Local DNS**: `192.168.1.108` (AdGuard Home LXC)
 - **VM Network & Proxmox**: `192.168.1.x/24` (Proxmox vmbr0)
-- **NGINX Proxy Manager**: `192.168.1.x/24` subnet
 
 *(For a comprehensive layout, see the complete [Network Architecture Diagram](./project-information/diagrams/network-architecture.md))*
 
@@ -38,12 +37,12 @@ Dynamic storage provisioning is achieved using **Longhorn v1.8.0**, strictly dep
 
 ### The MetalLB / Ingress Routing Challenge
 A major hurdle in this architecture was exposing the internal Kubernetes Services out to the physical LAN network. 
-1. **MetalLB** was initially deployed in L2 mode to assign External Virtual IPs (from a pool of `192.168.1.x` addresses) to our **NGINX Ingress Controllers**.
-2. **The Problem:** Depending on router/firewall capabilities, raw load balanced IPs inside an internal isolated bridge might not route nicely to client browsers without native BGP.
-3. **The Solution:** We bypassed routing limitations by introducing a Tier-1 reverse proxy (**NGINX Proxy Manager**) on the `192.168.1.x` LAN. We map local URLs (like `argocd.local` or `argo-workflows.local`) using an internal AdGuard DNS (`192.168.1.109`), forwarding the proxy securely into the physical Control Plane node IPs (`192.168.1.107`) targeting the associated NGINX Ingress Controller's **NodePorts** (e.g., `32259`).
+1. **MetalLB** is deployed in L2 mode and assigns External Virtual IPs from a dedicated pool (e.g. `192.168.1.110`) to the **NGINX Ingress Controller** in each cluster.
+2. **AdGuard DNS** resolves `*.local` service domains directly to the MetalLB VIP. Traffic flows straight from the browser to the NGINX Ingress controller — no intermediate reverse proxy required.
+3. **NGINX Ingress** routes based on the `Host:` header to the correct backend service.
 
 ### 🔒 TLS Certificates (cert-manager)
-To secure all internal routing, **cert-manager** was deployed as a native Kubernetes add-on. A global `ClusterIssuer` autonomously provisions Self-Signed TLS certificates for internal domains (e.g., `argocd.local`) locking down the Ingress controllers. Because the API traffic is inherently encrypted by Kubernetes, the NGINX Proxy Manager is explicitly configured to use strict `HTTPS` schemes, bridging the self-signed certificates from the internal Ingress Controller out securely to the physical developer network.
+To secure all internal routing, **cert-manager** was deployed as a native Kubernetes add-on. A global `ClusterIssuer` autonomously provisions Self-Signed TLS certificates for internal domains (e.g., `argocd.local`). TLS is terminated at the **NGINX Ingress** level — internal pods run HTTP only (`secure: false`), preventing double-TLS handshake failures.
 
 ---
 
@@ -98,9 +97,9 @@ kubectl apply -f gitops/root-app.yaml
 ```
 
 **4. Access UIs Locally**:
-Because the environment lies behind a secure reverse proxy & AdGuard routing layer, ensure your native machine's DNS leverages `192.168.1.109`.
-- ArgoCD: `https://argocd.local:32259` (Via Reverse Proxy)
-- Workflows: `https://argo-workflows.local` (Via Reverse Proxy)
+Because the environment uses AdGuard DNS for `.local` domain resolution, ensure your machine uses AdGuard (`192.168.1.108`) as its DNS server.
+- ArgoCD: `https://argocd.local`
+- Argo Workflows: `https://argo-workflows.local`
 
 ---
 

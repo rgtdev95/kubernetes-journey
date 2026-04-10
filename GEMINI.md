@@ -32,8 +32,7 @@
 
 ### Network Topology
 - **Physical Gateway**: `192.168.1.1` (TP-Link ER605)
-- **Local DNS**: `192.168.1.108` (AdGuard Home on LXC) — injects custom DNS for `.local` domains
-- **Reverse Proxy**: NGINX Proxy Manager on LAN, maps `*.local` → NodePorts on control plane IPs
+- **Local DNS**: `192.168.1.108` (AdGuard Home on LXC) — resolves `*.local` service domains to MetalLB VIPs
 - **MetalLB Pools**:
   - `central-hub`: `192.168.1.110–139`
   - `prod-cluster`: `192.168.1.140–169`
@@ -74,7 +73,7 @@ gitops/
 ### TLS Termination Pattern (Important!)
 - TLS is **terminated at the NGINX Ingress** level (self-signed cert via cert-manager)
 - Internal pods run **HTTP only** (e.g., `secure: false` in Argo Workflows Helm values)
-- NGINX Proxy Manager → NodePort, using **HTTP** backend to avoid double-TLS SSL handshake failures
+- NGINX Ingress receives traffic at the MetalLB VIP — no intermediate reverse proxy layer
 
 ---
 
@@ -104,6 +103,7 @@ gitops/
 | **Goal 2** | Deploy Argo Workflows via GitOps App-of-Apps | ✅ COMPLETED |
 | **Goal 3** | Deploy Argo Rollouts via GitOps (namespace: `argorollouts`) | 🔵 IN PROGRESS |
 | **Goal 3.5** | Deploy Argo Events via GitOps (namespace: `argoevents`) | ⏳ PENDING |
+| **Goal 4** | Hybrid Cloud: Connect remote Cluster B (CGNAT) via WireGuard LXC bastions + VPS-2 relay | ⏳ PENDING |
 
 See `project-information/project-context/` for detailed plans per goal.
 
@@ -115,7 +115,7 @@ All 6 stages are done. Execution order for reference:
 4. ✅ **Stage 3** — Ansible `02-bootstrap-clusters.yml`: `kubeadm init` + worker join on all 3 clusters
 5. ✅ **Stage 4** — Calico CNI + Longhorn storage deployed on all 3 clusters
 6. ✅ **Stage 5** — MetalLB (L2) + NGINX Ingress + cert-manager ClusterIssuer on all 3 clusters
-7. ✅ **Stage 5.5** — NGINX Proxy Manager bypass for TP-Link ER605 (NodePort routing via NPM)
+7. ✅ **Stage 5.5** — AdGuard DNS updated: service domains (`argocd.local`, `argo-workflows.local`) point directly to MetalLB VIP `192.168.1.110`
 8. ✅ **Stage 6** — ArgoCD v3.3.6 on `central-hub`, prod + dev clusters registered via `argocd cluster add`
 
 ### Goal 2 — Key Troubleshooting: 502 Bad Gateway
@@ -148,8 +148,11 @@ kubernetes-journey/
     │   ├── goal-2/
     │   │   ├── plan.md
     │   │   └── task.md
-    │   └── goal-3/
-    │       ├── plan.md
+    │   ├── goal-3/
+    │   │   ├── plan.md
+    │   │   └── task.md
+    │   └── goal-4/
+    │       ├── plan.md                ← Hybrid cloud WireGuard tunnel plan
     │       └── task.md
     └── troubleshooting/               ← Documented issues & resolutions
 ```
@@ -165,6 +168,10 @@ kubernetes-journey/
 5. **ArgoCD Hub-Spoke**: `central-hub` is the only cluster with ArgoCD. `prod-cluster` and `dev-cluster` are remote targets registered via `argocd cluster add`.
 6. **WSL for Ansible**: Ansible runs in WSL on Windows, not PowerShell. Use Linux-style paths and commands.
 7. **Mono-Repo for all clusters**: A single GitHub repo manages all 3 clusters via ArgoCD ApplicationSets or separate Application manifests targeting different cluster destinations.
+8. **WireGuard in LXC (Goal 4)**: WireGuard runs in Ubuntu LXC containers on each Proxmox host. The WireGuard kernel module must be loaded on the **Proxmox host** — LXC containers share the host kernel. LXC conf needs `lxc.cgroup2.devices.allow: c 10:200 rwm` and TUN device bind-mount.
+9. **Pod CIDR — No Overlap (Goal 4)**: Existing clusters all use `10.244.0.0/16`. Cluster B (remote) **must** use `10.245.0.0/16`. MTU on Cluster B's Calico must be set to `1380` (WireGuard overhead).
+10. **CGNAT Keepalive (Goal 4)**: Set `PersistentKeepalive = 25` on all WireGuard peers behind CGNAT to prevent idle tunnel drop.
+11. **MetalLB L2 Ping Gotcha**: Pinging a MetalLB VIP from a different subnet (like Windows `192.168.0.x` → K8s `192.168.1.110`) may return "Destination host unreachable" from a worker node. This is normal. MetalLB only responds on the specific Service ports (80/443). Always test with `curl` or a browser, never just `ping`.
 
 ---
 
